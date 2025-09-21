@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(arrayBuffer)
     await writeFile(inputPath, buffer)
 
-    // Xây dựng lệnh FFmpeg
+    // Xây                            ựng lệnh FFmpeg
     const resolutions = {
       '720p': '1280x720',
       '1080p': '1920x1080',
@@ -60,19 +60,22 @@ export async function POST(request: NextRequest) {
     }
 
     // Cấu hình output
-    ffmpegCommand += ` -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k -s ${resolutions[resolution as keyof typeof resolutions] || resolutions['1080p']}`
+    const targetResolution = resolutions[resolution as keyof typeof resolutions] || resolutions['1080p']
+    ffmpegCommand += ` -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k`
 
     // Xử lý filter cho video chính và outro
     if (outroVideoFile) {
       if (mirrored) {
-        ffmpegCommand += ` -filter_complex "[0:v]hflip[v0];[v0][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]"`
+        ffmpegCommand += ` -filter_complex "[0:v]hflip,scale=${targetResolution}[v0];[1:v]scale=${targetResolution}[v1];[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[outv][outa]"`
       } else {
-        ffmpegCommand += ` -filter_complex "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]"`
+        ffmpegCommand += ` -filter_complex "[0:v]scale=${targetResolution}[v0];[1:v]scale=${targetResolution}[v1];[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[outv][outa]"`
       }
       ffmpegCommand += ` -map "[outv]" -map "[outa]"`
     } else {
       if (mirrored) {
-        ffmpegCommand += ' -vf "hflip"'
+        ffmpegCommand += ` -vf "hflip,scale=${targetResolution}"`
+      } else {
+        ffmpegCommand += ` -s ${targetResolution}`
       }
     }
 
