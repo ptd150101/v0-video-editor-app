@@ -38,14 +38,18 @@ export async function POST(request: NextRequest) {
     const buffer = Buffer.from(arrayBuffer)
     await writeFile(inputPath, buffer)
 
-    // Xây                            ựng lệnh FFmpeg
+    // Xây dựng lệnh FFmpeg
     const resolutions = {
-      '720p': '1280x720',
-      '1080p': '1920x1080',
-      '4K': '3840x2160'
+      '720p': '720x1280',
+      '1080p': '1080x1920',
+      '4K': '2160x3840'
     }
 
-    let ffmpegCommand = `ffmpeg -i "${inputPath}"`
+    let ffmpegCommand = `ffmpeg -i "${inputPath}" -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k -s ${resolutions[resolution as keyof typeof resolutions] || resolutions['1080p']}`
+
+    if (mirrored) {
+      ffmpegCommand += ' -vf "hflip"'
+    }
 
     // Thêm outro video nếu có
     if (outroVideoFile) {
@@ -56,27 +60,34 @@ export async function POST(request: NextRequest) {
       const outroBuffer = Buffer.from(outroArrayBuffer)
       await writeFile(outroPath, outroBuffer)
       
-      ffmpegCommand += ` -i "${outroPath}"`
-    }
-
-    // Cấu hình output
-    const targetResolution = resolutions[resolution as keyof typeof resolutions] || resolutions['1080p']
-    ffmpegCommand += ` -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k`
-
-    // Xử lý filter cho video chính và outro
-    if (outroVideoFile) {
-      if (mirrored) {
-        ffmpegCommand += ` -filter_complex "[0:v]hflip,scale=${targetResolution}[v0];[1:v]scale=${targetResolution}[v1];[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[outv][outa]"`
-      } else {
-        ffmpegCommand += ` -filter_complex "[0:v]scale=${targetResolution}[v0];[1:v]scale=${targetResolution}[v1];[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[outv][outa]"`
-      }
-      ffmpegCommand += ` -map "[outv]" -map "[outa]"`
-    } else {
-      if (mirrored) {
-        ffmpegCommand += ` -vf "hflip,scale=${targetResolution}"`
-      } else {
-        ffmpegCommand += ` -s ${targetResolution}`
-      }
+      // Tạo file tạm cho video chính đã xử lý
+      const tempProcessedPath = join(tempDir, `temp_processed_${timestamp}.mp4`)
+      
+      // Xử lý video chính trước
+      const processMainCommand = ffmpegCommand + ` "${tempProcessedPath}"`
+      console.log('Processing main video:', processMainCommand)
+      await execAsync(processMainCommand)
+      
+      // Re-encode outro video về cùng format và frame rate với video chính
+      const outroProcessedPath = join(tempDir, `outro_processed_${timestamp}.mp4`)
+      const outroProcessCommand = `ffmpeg -i "${outroPath}" -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k -r 30 "${outroProcessedPath}"`
+      console.log('Processing outro video:', outroProcessCommand)
+      await execAsync(outroProcessCommand)
+      
+      // Tạo file list để concat
+      const fileListPath = join(tempDir, `filelist_${timestamp}.txt`)
+      const fileListContent = `file '${tempProcessedPath}'\nfile '${outroProcessedPath}'`
+      await writeFile(fileListPath, fileListContent)
+      
+      // Sử dụng concat demuxer với copy (vì đã cùng format)
+      ffmpegCommand = `ffmpeg -f concat -safe 0 -i "${fileListPath}" -c copy`
+      
+      // Cleanup temp files sau khi xử lý xong
+      setTimeout(() => {
+        unlink(tempProcessedPath).catch(() => {})
+        unlink(outroProcessedPath).catch(() => {})
+        unlink(fileListPath).catch(() => {})
+      }, 1000)
     }
 
     ffmpegCommand += ` "${outputPath}"`
