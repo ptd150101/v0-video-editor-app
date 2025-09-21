@@ -11,6 +11,7 @@ import { Upload, Play, Pause, Download, Settings, FlipHorizontal, X, Sparkles, V
 interface VideoSettings {
   resolution: "720p" | "1080p" | "4K"
   mirrored: boolean
+  outroVideo?: File
 }
 
 interface VideoFile {
@@ -32,6 +33,7 @@ export default function VideoEditor() {
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const outroInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files
@@ -69,6 +71,21 @@ export default function VideoEditor() {
     [currentVideoIndex],
   )
 
+  const handleOutroUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (file && file.type.startsWith("video/")) {
+      setSettings(prev => ({ ...prev, outroVideo: file }))
+    }
+    // Reset input
+    if (event.target) {
+      event.target.value = ''
+    }
+  }, [])
+
+  const removeOutroVideo = useCallback(() => {
+    setSettings(prev => ({ ...prev, outroVideo: undefined }))
+  }, [])
+
   const togglePlayPause = useCallback(() => {
     if (videoRef.current) {
       if (isPlaying) {
@@ -93,6 +110,11 @@ export default function VideoEditor() {
         formData.append('video', videoFiles[videoIndex].file)
         formData.append('resolution', settings.resolution)
         formData.append('mirrored', settings.mirrored.toString())
+        
+        // Thêm outro video nếu có
+        if (settings.outroVideo) {
+          formData.append('outroVideo', settings.outroVideo)
+        }
 
         const response = await fetch('/api/process-video', {
           method: 'POST',
@@ -178,6 +200,28 @@ export default function VideoEditor() {
     [videoFiles, settings.resolution],
   )
 
+  const downloadAllVideos = useCallback(() => {
+    const processedVideos = videoFiles.filter(video => video.processedUrl)
+    
+    if (processedVideos.length === 0) {
+      alert('Không có video nào đã được xử lý để download!')
+      return
+    }
+
+    // Download từng video với delay nhỏ để tránh browser block
+    processedVideos.forEach((video, index) => {
+      setTimeout(() => {
+        const a = document.createElement("a")
+        a.href = video.processedUrl!
+        a.download = `video_edited_${settings.resolution}_${index + 1}_${Date.now()}.mp4`
+        a.setAttribute("download", a.download)
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+      }, index * 500) // Delay 500ms giữa mỗi download
+    })
+  }, [videoFiles, settings.resolution])
+
   const handleAddMoreVideos = useCallback(() => {
     console.log('handleAddMoreVideos called')
     if (fileInputRef.current) {
@@ -199,6 +243,16 @@ export default function VideoEditor() {
         accept="video/*"
         multiple
         onChange={handleFileUpload}
+        className="hidden"
+        style={{ display: 'none' }}
+      />
+      
+      {/* Input file cho outro video */}
+      <input
+        ref={outroInputRef}
+        type="file"
+        accept="video/*"
+        onChange={handleOutroUpload}
         className="hidden"
         style={{ display: 'none' }}
       />
@@ -410,6 +464,58 @@ export default function VideoEditor() {
                   {settings.mirrored ? "Đã lật ngược" : "Lật ngược video"}
                 </Button>
               </div>
+
+              <div className="space-y-3 sm:space-y-4">
+                <Label className="text-xs sm:text-sm font-semibold text-gray-700 flex items-center gap-1 sm:gap-2">
+                  <Video className="w-3 h-3 sm:w-4 sm:h-4" />
+                  Video Outro
+                </Label>
+                {!settings.outroVideo ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => outroInputRef.current?.click()}
+                    className="w-full bg-white/80 hover:bg-white border-gray-200 hover:border-cyan-300 text-gray-700 hover:text-cyan-700 hover-lift text-xs sm:text-sm"
+                  >
+                    <Upload className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                    Thêm video outro
+                  </Button>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <Video className="w-4 h-4 text-gray-600 flex-shrink-0" />
+                        <span 
+                          className="text-xs sm:text-sm font-medium text-gray-700 truncate"
+                          title={settings.outroVideo.name}
+                        >
+                          {settings.outroVideo.name}
+                        </span>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={removeOutroVideo}
+                        className="w-6 h-6 p-0 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 flex-shrink-0 ml-2"
+                      >
+                        <X className="w-3 h-3" />
+                      </Button>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => outroInputRef.current?.click()}
+                      className="w-full bg-white/80 hover:bg-white border-gray-200 hover:border-cyan-300 text-gray-700 hover:text-cyan-700 hover-lift text-xs sm:text-sm"
+                    >
+                      <Upload className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                      Thay đổi outro
+                    </Button>
+                  </div>
+                )}
+                <p className="text-xs text-gray-500">
+                  Video outro sẽ được ghép vào cuối video chính (không bị ảnh hưởng bởi hiệu ứng lật)
+                </p>
+              </div>
             </CardContent>
           </Card>
 
@@ -436,6 +542,16 @@ export default function VideoEditor() {
                         />
                       ),
                   )}
+                </div>
+                <div className="mt-4 sm:mt-6 flex justify-end">
+                  <Button
+                    onClick={downloadAllVideos}
+                    disabled={videoFiles.filter(v => v.processedUrl).length === 0}
+                    className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white shadow-lg hover-lift disabled:opacity-50 text-sm sm:text-base"
+                  >
+                    <Download className="w-3 h-3 sm:w-4 sm:h-4 mr-1 sm:mr-2" />
+                    Tải xuống tất cả
+                  </Button>
                 </div>
               </CardContent>
             </Card>

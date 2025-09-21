@@ -11,6 +11,7 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
     const videoFile = formData.get('video') as File
+    const outroVideoFile = formData.get('outroVideo') as File
     const resolution = formData.get('resolution') as string
     const mirrored = formData.get('mirrored') === 'true'
 
@@ -32,7 +33,7 @@ export async function POST(request: NextRequest) {
     const inputPath = join(tempDir, inputFileName)
     const outputPath = join(tempDir, outputFileName)
 
-    // Lưu file input
+    // Lưu file input chính
     const arrayBuffer = await videoFile.arrayBuffer()
     const buffer = Buffer.from(arrayBuffer)
     await writeFile(inputPath, buffer)
@@ -44,10 +45,35 @@ export async function POST(request: NextRequest) {
       '4K': '3840x2160'
     }
 
-    let ffmpegCommand = `ffmpeg -i "${inputPath}" -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k -s ${resolutions[resolution as keyof typeof resolutions] || resolutions['1080p']}`
+    let ffmpegCommand = `ffmpeg -i "${inputPath}"`
 
-    if (mirrored) {
-      ffmpegCommand += ' -vf "hflip"'
+    // Thêm outro video nếu có
+    if (outroVideoFile) {
+      const outroFileName = `outro_${timestamp}.${outroVideoFile.name.split('.').pop()}`
+      const outroPath = join(tempDir, outroFileName)
+      
+      const outroArrayBuffer = await outroVideoFile.arrayBuffer()
+      const outroBuffer = Buffer.from(outroArrayBuffer)
+      await writeFile(outroPath, outroBuffer)
+      
+      ffmpegCommand += ` -i "${outroPath}"`
+    }
+
+    // Cấu hình output
+    ffmpegCommand += ` -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k -s ${resolutions[resolution as keyof typeof resolutions] || resolutions['1080p']}`
+
+    // Xử lý filter cho video chính và outro
+    if (outroVideoFile) {
+      if (mirrored) {
+        ffmpegCommand += ` -filter_complex "[0:v]hflip[v0];[v0][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]"`
+      } else {
+        ffmpegCommand += ` -filter_complex "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]"`
+      }
+      ffmpegCommand += ` -map "[outv]" -map "[outa]"`
+    } else {
+      if (mirrored) {
+        ffmpegCommand += ' -vf "hflip"'
+      }
     }
 
     ffmpegCommand += ` "${outputPath}"`
@@ -63,9 +89,16 @@ export async function POST(request: NextRequest) {
     // Cleanup temp files
     await unlink(inputPath).catch(() => {})
     await unlink(outputPath).catch(() => {})
+    
+    // Cleanup outro file nếu có
+    if (outroVideoFile) {
+      const outroFileName = `outro_${timestamp}.${outroVideoFile.name.split('.').pop()}`
+      const outroPath = join(tempDir, outroFileName)
+      await unlink(outroPath).catch(() => {})
+    }
 
     // Trả về video đã xử lý
-    return new NextResponse(outputBuffer, {
+    return new Response(new Uint8Array(outputBuffer), {
       headers: {
         'Content-Type': 'video/mp4',
         'Content-Disposition': `attachment; filename="processed_${videoFile.name}"`,
