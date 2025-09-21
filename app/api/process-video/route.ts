@@ -60,34 +60,14 @@ export async function POST(request: NextRequest) {
       const outroBuffer = Buffer.from(outroArrayBuffer)
       await writeFile(outroPath, outroBuffer)
       
-      // Tạo file tạm cho video chính đã xử lý
-      const tempProcessedPath = join(tempDir, `temp_processed_${timestamp}.mp4`)
+      // Sử dụng filter_complex để ghép trực tiếp với re-encode
+      const targetResolution = resolutions[resolution as keyof typeof resolutions] || resolutions['1080p']
       
-      // Xử lý video chính trước
-      const processMainCommand = ffmpegCommand + ` "${tempProcessedPath}"`
-      console.log('Processing main video:', processMainCommand)
-      await execAsync(processMainCommand)
-      
-      // Re-encode outro video về cùng format và frame rate với video chính
-      const outroProcessedPath = join(tempDir, `outro_processed_${timestamp}.mp4`)
-      const outroProcessCommand = `ffmpeg -i "${outroPath}" -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k -r 30 "${outroProcessedPath}"`
-      console.log('Processing outro video:', outroProcessCommand)
-      await execAsync(outroProcessCommand)
-      
-      // Tạo file list để concat
-      const fileListPath = join(tempDir, `filelist_${timestamp}.txt`)
-      const fileListContent = `file '${tempProcessedPath}'\nfile '${outroProcessedPath}'`
-      await writeFile(fileListPath, fileListContent)
-      
-      // Sử dụng concat demuxer với copy (vì đã cùng format)
-      ffmpegCommand = `ffmpeg -f concat -safe 0 -i "${fileListPath}" -c copy`
-      
-      // Cleanup temp files sau khi xử lý xong
-      setTimeout(() => {
-        unlink(tempProcessedPath).catch(() => {})
-        unlink(outroProcessedPath).catch(() => {})
-        unlink(fileListPath).catch(() => {})
-      }, 1000)
+      if (mirrored) {
+        ffmpegCommand = `ffmpeg -i "${inputPath}" -i "${outroPath}" -filter_complex "[0:v]hflip,scale=${targetResolution}[v0];[1:v]scale=${targetResolution}[v1];[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[outv][outa]" -map "[outv]" -map "[outa]" -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k`
+      } else {
+        ffmpegCommand = `ffmpeg -i "${inputPath}" -i "${outroPath}" -filter_complex "[0:v]scale=${targetResolution}[v0];[1:v]scale=${targetResolution}[v1];[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[outv][outa]" -map "[outv]" -map "[outa]" -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k`
+      }
     }
 
     ffmpegCommand += ` "${outputPath}"`
