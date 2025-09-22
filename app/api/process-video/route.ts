@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { writeFile, unlink, mkdir } from 'fs/promises'
@@ -6,6 +7,12 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 
 const execAsync = promisify(exec)
+
+// Khởi tạo Supabase client
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
 
 export async function POST(request: NextRequest) {
   try {
@@ -19,24 +26,37 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No video file provided' }, { status: 400 })
     }
 
+    // Upload input video to Supabase
+    const timestamp = Date.now()
+    const inputFileName = `input_${timestamp}.${videoFile.name.split('.').pop()}`
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('videos')
+      .upload(`temp/${inputFileName}`, videoFile)
+
+    if (uploadError) {
+      throw new Error(`Error uploading video: ${uploadError.message}`)
+    }
+
     // Tạo thư mục temp nếu chưa có
     const tempDir = join(process.cwd(), 'temp')
     if (!existsSync(tempDir)) {
       await mkdir(tempDir, { recursive: true })
     }
 
-    // Tạo tên file unique
-    const timestamp = Date.now()
-    const inputFileName = `input_${timestamp}.${videoFile.name.split('.').pop()}`
-    const outputFileName = `output_${timestamp}.mp4`
-    
-    const inputPath = join(tempDir, inputFileName)
-    const outputPath = join(tempDir, outputFileName)
+    // Download file from Supabase to temp
+    const { data: downloadData } = await supabase.storage
+      .from('videos')
+      .download(`temp/${inputFileName}`)
 
-    // Lưu file input chính
-    const arrayBuffer = await videoFile.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
-    await writeFile(inputPath, buffer)
+    if (!downloadData) {
+      throw new Error('Failed to download uploaded file')
+    }
+
+    // Lưu file vào temp directory
+    const inputPath = join(tempDir, inputFileName)
+    const outputFileName = `output_${timestamp}.mp4`
+    const outputPath = join(tempDir, outputFileName)
+    await writeFile(inputPath, Buffer.from(await downloadData.arrayBuffer()))
 
     // Xây dựng lệnh FFmpeg
     const resolutions = {
@@ -51,15 +71,25 @@ export async function POST(request: NextRequest) {
       ffmpegCommand += ' -vf "hflip"'
     }
 
-    // Thêm outro video nếu có
+    // Xử lý outro video nếu có
     if (outroVideoFile) {
       const outroFileName = `outro_${timestamp}.${outroVideoFile.name.split('.').pop()}`
       const outroPath = join(tempDir, outroFileName)
       
-      const outroArrayBuffer = await outroVideoFile.arrayBuffer()
-      const outroBuffer = Buffer.from(outroArrayBuffer)
-      await writeFile(outroPath, outroBuffer)
-      
+      // Upload outro to Supabase
+      await supabase.storage
+        .from('videos')
+        .upload(`temp/${outroFileName}`, outroVideoFile)
+
+      // Download outro to temp
+      const { data: outroDownloadData } = await supabase.storage
+        .from('videos')
+        .download(`temp/${outroFileName}`)
+
+      if (outroDownloadData) {
+        await writeFile(outroPath, Buffer.from(await outroDownloadData.arrayBuffer()))
+      }
+
       // Sử dụng filter_complex để ghép trực tiếp với re-encode
       const targetResolution = resolutions[resolution as keyof typeof resolutions] || resolutions['1080p']
       
@@ -72,31 +102,43 @@ export async function POST(request: NextRequest) {
 
     ffmpegCommand += ` "${outputPath}"`
 
-    console.log('Executing FFmpeg command:', ffmpegCommand)
-
     // Chạy FFmpeg
     await execAsync(ffmpegCommand)
 
-    // Đọc file output
+    // Upload output video to Supabase
     const outputBuffer = await import('fs').then(fs => fs.promises.readFile(outputPath))
+    const { data: outputUploadData, error: outputUploadError } = await supabase.storage
+      .from('videos')
+      .upload(`processed/${outputFileName}`, outputBuffer)
+
+    if (outputUploadError) {
+      throw new Error(`Error uploading processed video: ${outputUploadError.message}`)
+    }
+
+    // Get public URL
+    const { data: { publicUrl } } = supabase.storage
+      .from('videos')
+      .getPublicUrl(`processed/${outputFileName}`)
 
     // Cleanup temp files
     await unlink(inputPath).catch(() => {})
     await unlink(outputPath).catch(() => {})
-    
-    // Cleanup outro file nếu có
     if (outroVideoFile) {
       const outroFileName = `outro_${timestamp}.${outroVideoFile.name.split('.').pop()}`
       const outroPath = join(tempDir, outroFileName)
       await unlink(outroPath).catch(() => {})
     }
 
-    // Trả về video đã xử lý
-    return new Response(new Uint8Array(outputBuffer), {
-      headers: {
-        'Content-Type': 'video/mp4',
-        'Content-Disposition': `attachment; filename="processed_${videoFile.name}"`,
-      },
+    // Cleanup temp files from Supabase
+    await supabase.storage.from('videos').remove([`temp/${inputFileName}`])
+    if (outroVideoFile) {
+      await supabase.storage.from('videos').remove([`temp/${outroFileName}`])
+    }
+
+    // Return public URL
+    return NextResponse.json({
+      success: true,
+      url: publicUrl
     })
 
   } catch (error) {
